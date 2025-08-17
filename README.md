@@ -4,7 +4,7 @@ It is an executable that allows you to play hands-free on any game level or mod 
 
 ## Usage
 <b>Using already compiled executable</b>
-* [Download](#download) application
+* [Download](https://github.com/AmphibiDev/BeatBangerAuto-Rework/releases/latest) application
 * Run your game (If not running already)
 * Open downloaded program <b>"BeatBangerAuto.exe"</b>
 * Press large star to the right
