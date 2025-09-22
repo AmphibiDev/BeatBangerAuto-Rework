@@ -1,7 +1,9 @@
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
-#include "MemoryScanner.h"
+#include "core/AppController.h"
+#include "core/MemoryScanner.h"
+#include "utils/UpdateManager.h"
 
 int main(int argc, char *argv[])
 {
@@ -9,7 +11,12 @@ int main(int argc, char *argv[])
     QQmlApplicationEngine engine;
 
     MemoryScanner scanner;
+    UpdateManager updateManager;
+
+    AppController controller(&scanner, &updateManager);
+
     engine.rootContext()->setContextProperty("scanner", &scanner);
+    engine.rootContext()->setContextProperty("updateManager", &updateManager);
 
     QObject::connect(
         &engine,

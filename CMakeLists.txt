@@ -11,20 +11,37 @@ find_package(Qt6 REQUIRED COMPONENTS Quick)
 qt_standard_project_setup(REQUIRES 6.8)
 
 qt_add_executable(BeatBangerAuto
-    main.cpp
-    images/appicon.rc
+    src/main.cpp
+    resources/appicon.rc
 )
 
 qt_add_qml_module(BeatBangerAuto
     URI BeatBangerAuto
     VERSION 1.0
     QML_FILES
-        Main.qml
-        SOURCES
-            memoryscanner.h
-            memoryscanner.cpp
-        RESOURCES
-            resources.qrc
+        qml/Main.qml
+    SOURCES
+        src/core/appcontroller.h
+        src/core/appcontroller.cpp
+        src/core/memoryscanner.h
+        src/core/memoryscanner.cpp
+        src/core/patternmatcher.h
+        src/core/patternmatcher.cpp
+        src/platform/windows/processmanager.h
+        src/platform/windows/processmanager.cpp
+        src/utils/constants.h
+        src/utils/configmanager.h
+        src/utils/configmanager.cpp
+        src/utils/updatemanager.h
+        src/utils/updatemanager.cpp
+    RESOURCES
+        resources/resources.qrc
+)
+
+add_custom_command(TARGET BeatBangerAuto POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/versions.json"
+        $<TARGET_FILE_DIR:BeatBangerAuto>
 )
 
 set_target_properties(BeatBangerAuto PROPERTIES
