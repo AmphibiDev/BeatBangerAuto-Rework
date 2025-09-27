@@ -577,7 +577,6 @@ void MemoryScanner::runAutoplay()
         SIZE_T bytesWritten;
         WriteProcessMemory(process, reinterpret_cast<LPVOID>(m_addresses[0]),
             &autoplayValue, sizeof(autoplayValue), &bytesWritten);
-    }
 
     CloseHandle(process);
 
