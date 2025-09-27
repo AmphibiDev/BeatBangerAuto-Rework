@@ -1,15 +1,21 @@
-#include <QGuiApplication>
-#include <QQmlApplicationEngine>
-#include <QQmlContext>
-#include "MemoryScanner.h"
+#include "core/appcontroller.h"
+#include "core/memoryscanner.h"
+#include "utils/updatemanager.h"
+
+#include <QApplication>
 
 int main(int argc, char *argv[])
 {
-    QGuiApplication app(argc, argv);
+    QApplication app(argc, argv);
     QQmlApplicationEngine engine;
 
     MemoryScanner scanner;
+    UpdateManager updateManager;
+
+    AppController controller(&scanner, &updateManager);
+
     engine.rootContext()->setContextProperty("scanner", &scanner);
+    engine.rootContext()->setContextProperty("updateManager", &updateManager);
 
     QObject::connect(
         &engine,

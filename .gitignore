@@ -15,6 +15,7 @@ install_manifest.txt
 *.qbs.user
 *.qmlproject.user
 *.autosave
+CMakeLists.txt.user
 
 # OS junk
 .DS_Store
