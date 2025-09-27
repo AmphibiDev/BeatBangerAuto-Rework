@@ -578,14 +578,15 @@ void MemoryScanner::runAutoplay()
         WriteProcessMemory(process, reinterpret_cast<LPVOID>(m_addresses[0]),
             &autoplayValue, sizeof(autoplayValue), &bytesWritten);
 
-    CloseHandle(process);
+        CloseHandle(process);
 
-    if (m_state != State::Idle) {
-        QTimer::singleShot(0, this, [this]() {
-            setState(State::Idle);
-            if (!m_gameWasClosed) {
-                updateStatus("Made by Amphibi");
-            }
-        });
+        if (m_state != State::Idle) {
+            QTimer::singleShot(0, this, [this]() {
+                setState(State::Idle);
+                if (!m_gameWasClosed) {
+                    updateStatus("Made by Amphibi");
+                }
+            });
+        }
     }
 }
