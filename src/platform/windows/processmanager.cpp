@@ -1,11 +1,8 @@
 #include "processmanager.h"
-#include <psapi.h>
-#include <tlhelp32.h>
-#include <winver.h>
 
 #pragma comment(lib, "version.lib")
 
-DWORD ProcessManager::findProcessId(const QString& processName)
+DWORD ProcessManager::getProcessId(const QString& processName)
 {
     HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (snapshot == INVALID_HANDLE_VALUE) {
@@ -33,7 +30,7 @@ DWORD ProcessManager::findProcessId(const QString& processName)
 
 ProcessHandle ProcessManager::openProcess(const QString& processName, DWORD accessRights)
 {
-    DWORD pid = findProcessId(processName);
+    DWORD pid = getProcessId(processName);
     if (pid == 0) {
         return ProcessHandle();
     }
@@ -87,7 +84,7 @@ bool ProcessManager::writeMemory(HANDLE process, uintptr_t address, const void* 
 
     SIZE_T bytesWritten;
     bool success = WriteProcessMemory(process, reinterpret_cast<LPVOID>(address),
-                                      buffer, size, &bytesWritten);
+        buffer, size, &bytesWritten);
 
     if (!success) {
         qDebug() << "[ERROR] Failed to write memory at address" << Qt::hex << address << "Error:" << GetLastError();
@@ -106,7 +103,7 @@ void ProcessManager::getSystemMemoryLimits(uint8_t*& minAddress, uint8_t*& maxAd
     maxAddress = static_cast<uint8_t*>(sysInfo.lpMaximumApplicationAddress);
 }
 
-QString ProcessManager::getProcessMD5(DWORD pid) {
+QString ProcessManager::computeProcessMD5(DWORD pid) {
     if (pid == 0) return QString();
 
     HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);

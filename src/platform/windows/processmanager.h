@@ -1,12 +1,17 @@
 #ifndef PROCESSMANAGER_H
 #define PROCESSMANAGER_H
 
+// Qt includes
 #include <QString>
 #include <QCryptographicHash>
-#include <QIODevice>
 #include <QFile>
 #include <QDebug>
+
+// System includes
 #include <windows.h>
+#include <psapi.h>
+#include <tlhelp32.h>
+#include <winver.h>
 
 class ProcessHandle
 {
@@ -48,16 +53,13 @@ private:
 class ProcessManager
 {
 public:
-    static DWORD findProcessId(const QString& processName);
-
+    static DWORD getProcessId(const QString& processName);
     static ProcessHandle openProcess(const QString& processName, DWORD accessRights);
-
     static bool isProcessRunning(HANDLE processHandle);
     static bool readMemory(HANDLE process, uintptr_t address, void* buffer, size_t size);
     static bool writeMemory(HANDLE process, uintptr_t address, const void* buffer, size_t size);
     static void getSystemMemoryLimits(uint8_t*& minAddress, uint8_t*& maxAddress);
-
-    static QString getProcessMD5(DWORD pid);
+    static QString computeProcessMD5(DWORD pid);
 
 private:
     ProcessManager() = delete;

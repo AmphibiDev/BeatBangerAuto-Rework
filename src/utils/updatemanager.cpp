@@ -1,12 +1,11 @@
 #include "updatemanager.h"
-#include "../utils/constants.h"
 
 UpdateManager::UpdateManager(QObject *parent)
     : QObject(parent)
     , m_networkManager(new QNetworkAccessManager(this))
     , m_currentReply(nullptr)
     , m_timeoutTimer(new QTimer(this))
-    , m_githubConfigUrl("https://raw.githubusercontent.com/AmphibiDev/BeatBangerAuto-Rework/main/versions.json")
+    , m_githubConfigUrl(Constants::GITHUB_CONFIG_URL)
 {
     m_localConfigPath = QDir(QCoreApplication::applicationDirPath()).filePath(Constants::CONFIG_FILENAME);
     m_currentVersion = readLocalVersion();
@@ -15,15 +14,13 @@ UpdateManager::UpdateManager(QObject *parent)
     connect(m_timeoutTimer, &QTimer::timeout, this, &UpdateManager::onNetworkTimeout);
 }
 
-// QML Methods
 void UpdateManager::checkForUpdates()
 {
-    cleanupNetworkRequest();
+    abortNetworkRequest();
 
     QUrl configUrl(m_githubConfigUrl);
     QNetworkRequest request(configUrl);
     request.setHeader(QNetworkRequest::UserAgentHeader, "BeatBangerAuto");
-
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
 
     m_currentReply = m_networkManager->get(request);
@@ -32,17 +29,16 @@ void UpdateManager::checkForUpdates()
     m_timeoutTimer->start(Constants::NETWORK_REQUEST_TIMEOUT);
 }
 
-bool UpdateManager::hasLocalConfig() const
+bool UpdateManager::localConfigExists() const
 {
     return QFile::exists(m_localConfigPath);
 }
 
-QString UpdateManager::getLocalConfigPath() const
+QString UpdateManager::localConfigPath() const
 {
     return m_localConfigPath;
 }
 
-// Network Response Handling
 void UpdateManager::onConfigDownloadFinished()
 {
     m_timeoutTimer->stop();
@@ -64,30 +60,43 @@ void UpdateManager::onConfigDownloadFinished()
             qDebug() << "[LOG] Failed to download config";
         }
 
-        proceedWithoutUpdate();
+        finalizeWithoutUpdate();
         return;
     }
 
     QByteArray configData = reply->readAll();
     if (configData.isEmpty()) {
         qDebug() << "[LOG] Downloaded config is empty";
-        proceedWithoutUpdate();
+        finalizeWithoutUpdate();
         return;
     }
 
     QJsonDocument remoteDoc = QJsonDocument::fromJson(configData);
     if (!remoteDoc.isObject()) {
         qDebug() << "[LOG] Invalid JSON format";
-        proceedWithoutUpdate();
+        finalizeWithoutUpdate();
         return;
     }
 
-    QString remoteVersion = remoteDoc.object().value("version").toString("0");
-    QString currentLocalVersion = readLocalVersion();
+    QString remoteAppVersion = remoteDoc.object().value("app_version").toString("");
+    if (remoteAppVersion.isEmpty()) {
+        qDebug() << "[LOG] Missing app_version in config";
+        finalizeWithoutUpdate();
+        return;
+    }
 
-    qDebug() << "[LOG] Local version:" << currentLocalVersion << "| Github version:" << remoteVersion;
+    if (remoteAppVersion != Constants::APP_VERSION) {
+        qDebug() << "[LOG] App version mismatch. Local:" << Constants::APP_VERSION << "Remote:" << remoteAppVersion;
+        showUpdateDialog(remoteAppVersion);
+        return;
+    }
 
-    bool shouldUpdate = !hasLocalConfig() || !isLocalConfigValid() || (currentLocalVersion != remoteVersion);
+    QString remoteConfigVersion = remoteDoc.object().value("config_version").toString("0");
+    QString currentConfigVersion = readLocalVersion();
+
+    qDebug() << "[LOG] Local config version:" << currentConfigVersion << "| Github config version:" << remoteConfigVersion;
+
+    bool shouldUpdate = !localConfigExists() || !isLocalConfigValid() || (currentConfigVersion != remoteConfigVersion);
 
     if (shouldUpdate) {
         if (saveConfig(configData)) {
@@ -106,15 +115,14 @@ void UpdateManager::onNetworkTimeout()
 {
     qDebug() << "[LOG] Network request timed out";
 
-    cleanupNetworkRequest();
+    abortNetworkRequest();
 
-    proceedWithoutUpdate();
+    finalizeWithoutUpdate();
 }
 
-// Helper Methods
 QString UpdateManager::readLocalVersion()
 {
-    if (!hasLocalConfig()) {
+    if (!localConfigExists()) {
         qDebug() << "[LOG] Local config file does not exist";
         return "0";
     }
@@ -134,7 +142,7 @@ QString UpdateManager::readLocalVersion()
         return "0";
     }
 
-    QString version = doc.object().value("version").toString("0");
+    QString version = doc.object().value("config_version").toString("0");
     return version;
 }
 
@@ -161,7 +169,7 @@ bool UpdateManager::saveConfig(const QByteArray& data)
 
 bool UpdateManager::isLocalConfigValid()
 {
-    if (!hasLocalConfig()) {
+    if (!localConfigExists()) {
         return false;
     }
 
@@ -187,13 +195,13 @@ bool UpdateManager::isLocalConfigValid()
 
     QJsonObject rootObj = doc.object();
 
-    if (!rootObj.contains("version")) {
-        qDebug() << "[LOG] Local config missing version field";
+    if (!rootObj.contains("app_version")) {
+        qDebug() << "[LOG] Local config missing app_version field";
         return false;
     }
 
-    if (!rootObj.contains("configurations")) {
-        qDebug() << "[LOG] Local config missing configurations field";
+    if (!rootObj.contains("config_version")) {
+        qDebug() << "[LOG] Local config missing config_version field";
         return false;
     }
 
@@ -207,14 +215,14 @@ bool UpdateManager::isLocalConfigValid()
     return true;
 }
 
-void UpdateManager::proceedWithoutUpdate()
+void UpdateManager::finalizeWithoutUpdate()
 {
     if (isLocalConfigValid()) {
         emit configUpToDate();
     }
 }
 
-void UpdateManager::cleanupNetworkRequest()
+void UpdateManager::abortNetworkRequest()
 {
     if (m_currentReply) {
         m_currentReply->disconnect(this);
@@ -224,4 +232,25 @@ void UpdateManager::cleanupNetworkRequest()
     }
 
     m_timeoutTimer->stop();
+}
+
+void UpdateManager::showUpdateDialog(const QString& newVersion)
+{
+    QMessageBox msgBox(
+        QMessageBox::Warning,
+        "Update Required!",
+        QString("A new app version is available!"),
+        QMessageBox::Yes | QMessageBox::No
+    );
+
+    msgBox.setWindowFlags(msgBox.windowFlags() & ~Qt::WindowContextHelpButtonHint);
+    msgBox.setTextFormat(Qt::RichText);
+    msgBox.setInformativeText(QString("Would you like to visit GitHub to download update?"));
+    msgBox.setDefaultButton(QMessageBox::Yes);
+
+    if (msgBox.exec() == QMessageBox::Yes) {
+        QDesktopServices::openUrl(QUrl(Constants::GITHUB_RELEASES_URL));
+    }
+
+    emit updateAvailable(newVersion);
 }

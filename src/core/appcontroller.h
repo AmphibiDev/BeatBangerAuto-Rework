@@ -1,12 +1,16 @@
 #ifndef APPCONTROLLER_H
 #define APPCONTROLLER_H
 
+// Qt includes
 #include <QObject>
 #include <QString>
-#include <QDebug>
+#include <QGuiApplication>
+#include <QQmlApplicationEngine>
+#include <QQmlContext>
 
-class MemoryScanner;
-class UpdateManager;
+// Project includes
+#include "memoryscanner.h"
+#include "../utils/updatemanager.h"
 
 class AppController : public QObject
 {
@@ -17,25 +21,18 @@ public:
     ~AppController() = default;
 
 private slots:
-    // MemoryScanner event handlers
     void onUpdateCheckRequested();
-
-    // UpdateManager event handlers
     void onUpdateStatusChanged(const QString& status);
     void onConfigUpdateCompleted();
     void onConfigUpToDate();
 
 private:
-    // Managed components
-    MemoryScanner* m_scanner;
-    UpdateManager* m_updateManager;
-
-    // State tracking
-    bool m_isUpdating;
-
-    // Internal methods
     void setupConnections();
     void handleUpdateFinished();
+
+    MemoryScanner* m_scanner;
+    UpdateManager* m_updateManager;
+    bool m_isUpdating;
 };
 
 #endif // APPCONTROLLER_H

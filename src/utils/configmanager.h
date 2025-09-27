@@ -1,15 +1,25 @@
 #ifndef CONFIGMANAGER_H
 #define CONFIGMANAGER_H
 
-#include <QDebug>
-#include <QString>
+// Qt includes
 #include <QCoreApplication>
+#include <QDebug>
+#include <QDir>
+#include <QFile>
+#include <QHash>
+#include <QString>
+#include <QStringList>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QDir>
-#include <vector>
+
+// STL includes
+#include <cmath>
 #include <optional>
+#include <vector>
+
+// Project includes
+#include "../utils/constants.h"
 
 struct VersionConfig {
     std::vector<int> autoplayPattern;
@@ -28,14 +38,13 @@ class ConfigManager
 public:
     bool loadFromFile(const QString& configPath);
 
-    std::optional<VersionConfig> getVersionConfig(const QString& versionNumber) const;
+    std::optional<VersionConfig> getVersionConfig(const QString& md5Hash) const;
 
     QString getLastError() const { return m_lastError; }
 
 private:
-    static std::vector<int> convertDecimalArrayToPattern(const QJsonArray& decimalArray);
-
-    static bool validateVersionConfig(const VersionConfig& config);
+    static std::vector<int> parseAutoplay(const QJsonArray& array);
+    static bool validateConfig(const VersionConfig& config);
 
     QHash<QString, VersionConfig> m_versionConfigs;
     QString m_lastError;

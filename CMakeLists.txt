@@ -6,7 +6,7 @@ set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -s -static -static-libgcc 
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTORCC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Quick)
+find_package(Qt6 REQUIRED COMPONENTS Quick Widgets)
 
 qt_standard_project_setup(REQUIRES 6.8)
 
@@ -40,7 +40,7 @@ qt_add_qml_module(BeatBangerAuto
 
 add_custom_command(TARGET BeatBangerAuto POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${CMAKE_SOURCE_DIR}/versions.json"
+        "${CMAKE_SOURCE_DIR}/config.json"
         $<TARGET_FILE_DIR:BeatBangerAuto>
 )
 
@@ -50,6 +50,7 @@ set_target_properties(BeatBangerAuto PROPERTIES
 
 target_link_libraries(BeatBangerAuto
     PRIVATE Qt6::Quick
+    PRIVATE Qt6::Widgets
 )
 
 include(GNUInstallDirs)

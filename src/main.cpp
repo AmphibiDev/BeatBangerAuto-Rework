@@ -1,13 +1,12 @@
-#include <QGuiApplication>
-#include <QQmlApplicationEngine>
-#include <QQmlContext>
-#include "core/AppController.h"
-#include "core/MemoryScanner.h"
-#include "utils/UpdateManager.h"
+#include "core/appcontroller.h"
+#include "core/memoryscanner.h"
+#include "utils/updatemanager.h"
+
+#include <QApplication>
 
 int main(int argc, char *argv[])
 {
-    QGuiApplication app(argc, argv);
+    QApplication app(argc, argv);
     QQmlApplicationEngine engine;
 
     MemoryScanner scanner;

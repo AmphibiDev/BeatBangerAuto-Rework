@@ -1,10 +1,6 @@
 #include "memoryscanner.h"
-#include "patternmatcher.h"
-#include "../utils/constants.h"
-#include "../platform/windows/processmanager.h"
 
-// MemoryRegionSearchThread Implementation
-MemoryScanner::MemoryRegionSearchThread::MemoryRegionSearchThread(
+MemoryScanner::MemoryRegionScanThread::MemoryRegionScanThread(
     MemoryScanner* scanner, HANDLE process, const VersionConfig& config,
     uint8_t* startAddr, uint8_t* endAddr, int threadId)
     : m_scanner(scanner), m_process(process), m_config(config),
@@ -13,7 +9,7 @@ MemoryScanner::MemoryRegionSearchThread::MemoryRegionSearchThread(
     m_result = {threadId, 0, false};
 }
 
-void MemoryScanner::MemoryRegionSearchThread::run()
+void MemoryScanner::MemoryRegionScanThread::run()
 {
     PatternMatcher matcher(m_config.autoplayPattern);
     if (!matcher.isValid()) {
@@ -25,7 +21,7 @@ void MemoryScanner::MemoryRegionSearchThread::run()
     std::vector<uint8_t> buffer(Constants::MEMORY_CHUNK_SIZE);
 
     while (address < m_endAddr && VirtualQueryEx(m_process, address, &memInfo, sizeof(memInfo))) {
-        if (m_scanner->shouldStopScanning()) {
+        if (m_scanner->shouldStop()) {
             return;
         }
 
@@ -34,10 +30,8 @@ void MemoryScanner::MemoryRegionSearchThread::run()
             break;
         }
 
-        bool isWritable = (memInfo.State == MEM_COMMIT) &&
-                          !(memInfo.Protect & (PAGE_NOACCESS | PAGE_GUARD)) &&
-                          (memInfo.Protect & (PAGE_READWRITE | PAGE_WRITECOPY |
-                                              PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE));
+        bool isWritable = (memInfo.State == MEM_COMMIT) && !(memInfo.Protect & (PAGE_NOACCESS | PAGE_GUARD)) &&
+            (memInfo.Protect & (PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE));
 
         if (isWritable && !m_result.found) {
             size_t regionSize = memInfo.RegionSize;
@@ -50,17 +44,15 @@ void MemoryScanner::MemoryRegionSearchThread::run()
             }
 
             size_t offset = 0;
-            while (offset < regionSize && !m_scanner->shouldStopScanning()) {
+            while (offset < regionSize && !m_scanner->shouldStop()) {
                 size_t chunkSize = std::min(Constants::MEMORY_CHUNK_SIZE, regionSize - offset);
                 SIZE_T bytesRead;
 
                 if (ReadProcessMemory(m_process, regionStart + offset, buffer.data(), chunkSize, &bytesRead) && bytesRead > 0) {
                     if (!m_result.found && bytesRead >= matcher.getPatternSize()) {
-                        size_t foundPos = matcher.find(buffer.data(), bytesRead);
+                        size_t foundPos = matcher.search(buffer.data(), bytesRead);
                         if (foundPos != SIZE_MAX) {
-                            m_result = {m_threadId,
-                                        reinterpret_cast<uintptr_t>(regionStart) + offset + foundPos,
-                                        true};
+                            m_result = {m_threadId, reinterpret_cast<uintptr_t>(regionStart) + offset + foundPos, true};
                             qDebug() << "[LOG] Found pattern at" << Qt::hex << m_result.address;
                             return;
                         }
@@ -73,58 +65,55 @@ void MemoryScanner::MemoryRegionSearchThread::run()
     }
 }
 
-// WorkerThread Implementation
 void MemoryScanner::WorkerThread::run()
 {
     if (m_isAutoplay) {
-        m_scanner->performAutoplayLoop();
+        m_scanner->runAutoplay();
     } else {
-        m_scanner->performAddressScanning();
+        m_scanner->scanMemory();
     }
 }
 
-// MemoryScanner Implementation
 MemoryScanner::MemoryScanner(QObject *parent)
     : QObject(parent)
-    , m_currentState(State::Idle)
-    , m_currentStatus("Made by Amphibi")
+    , m_state(State::Idle)
+    , m_status("Made by Amphibi")
     , m_gameVersion("Not Detected")
     , m_connectionStatus("")
     , m_shouldStop(false)
     , m_gameWasClosed(false)
     , m_waitingForUpdate(false)
-    , m_updateCheckRequested(false)
-    , m_lastKnownPid(0)
+    , m_updateRequested(false)
+    , m_lastPid(0)
     , m_addressesValid(false)
-    , m_completedSearches(0)
-    , m_processHandle(nullptr)
-    , m_configManager(std::make_unique<ConfigManager>())
+    , m_completedScans(0)
+    , m_process(nullptr)
+    , m_config(std::make_unique<ConfigManager>())
 {
     qRegisterMetaType<quintptr>("quintptr");
-    m_foundAddresses.fill(0);
-    loadConfiguration();
+    m_addresses.fill(0);
+    loadConfig();
 }
 
 MemoryScanner::~MemoryScanner()
 {
     stop();
-    cleanupThread();
+    cleanup();
 }
 
-// Property Getters
 bool MemoryScanner::isScanning() const
 {
-    return m_currentState == State::Scanning;
+    return m_state == State::Scanning;
 }
 
 bool MemoryScanner::inAutoplay() const
 {
-    return m_currentState == State::Autoplay;
+    return m_state == State::Autoplay;
 }
 
 QString MemoryScanner::statusText() const
 {
-    return m_currentStatus;
+    return m_status;
 }
 
 QString MemoryScanner::gameVersion() const
@@ -137,17 +126,17 @@ QString MemoryScanner::connectionStatus() const
     return m_connectionStatus;
 }
 
-bool MemoryScanner::shouldStopScanning() const
+bool MemoryScanner::shouldStop() const
 {
     return m_shouldStop;
 }
 
-void MemoryScanner::reloadConfiguration()
+void MemoryScanner::reloadConfig()
 {
-    loadConfiguration();
+    loadConfig();
 }
 
-void MemoryScanner::loadConfiguration()
+void MemoryScanner::loadConfig()
 {
     QString configPath = QDir(QCoreApplication::applicationDirPath()).filePath(Constants::CONFIG_FILENAME);
 
@@ -157,40 +146,39 @@ void MemoryScanner::loadConfiguration()
         return;
     }
 
-    if (m_configManager->loadFromFile(configPath)) {
+    if (m_config->loadFromFile(configPath)) {
         qDebug() << "[LOG] Successfully loaded configurations";
     } else {
-        qDebug() << "[ERROR] Failed to load configuration:" << m_configManager->getLastError();
+        qDebug() << "[ERROR] Failed to load configuration:" << m_config->getLastError();
         updateConnectionStatus("Config load failed");
     }
 }
 
-// Core Control Methods
 void MemoryScanner::toggle()
 {
-    switch (m_currentState) {
+    switch (m_state) {
     case State::Idle:
-        if (!m_updateCheckRequested) {
-            m_updateCheckRequested = true;
+        if (!m_updateRequested) {
+            m_updateRequested = true;
             m_waitingForUpdate = true;
             emit updateCheckStarted();
             return;
         }
 
-        loadConfiguration();
+        loadConfig();
         m_gameWasClosed = false;
 
         if (m_addressesValid) {
-            DWORD currentPid = ProcessManager::findProcessId(Constants::GAME_PROCESS_NAME);
-            if (currentPid != 0 && currentPid == m_lastKnownPid) {
+            DWORD currentPid = ProcessManager::getProcessId(Constants::GAME_PROCESS_NAME);
+            if (currentPid != 0 && currentPid == m_lastPid) {
                 startAutoplay();
                 return;
             } else {
                 m_addressesValid = false;
-                m_foundAddresses.fill(0);
+                m_addresses.fill(0);
             }
         }
-        startScanning();
+        startScan();
         break;
 
     case State::Scanning:
@@ -200,23 +188,22 @@ void MemoryScanner::toggle()
     }
 }
 
-void MemoryScanner::onUpdateCompleted()
+void MemoryScanner::onUpdateDone()
 {
-    if (m_waitingForUpdate && m_currentState == State::Idle) {
+    if (m_waitingForUpdate && m_state == State::Idle) {
         m_waitingForUpdate = false;
         toggle();
     }
 }
 
-// State Management
 void MemoryScanner::setState(State newState)
 {
-    if (m_currentState == newState) {
+    if (m_state == newState) {
         return;
     }
 
-    State oldState = m_currentState;
-    m_currentState = newState;
+    State oldState = m_state;
+    m_state = newState;
 
     if ((oldState == State::Scanning) != (newState == State::Scanning)) {
         emit scanningChanged(newState == State::Scanning);
@@ -229,8 +216,8 @@ void MemoryScanner::setState(State newState)
 
 void MemoryScanner::updateStatus(const QString& status)
 {
-    if (m_currentStatus != status) {
-        m_currentStatus = status;
+    if (m_status != status) {
+        m_status = status;
         emit statusTextChanged(status);
     }
 }
@@ -251,51 +238,50 @@ void MemoryScanner::updateGameVersion(const QString& version)
     }
 }
 
-// Thread Management
-void MemoryScanner::startScanning()
+void MemoryScanner::startScan()
 {
-    cleanupThread();
+    cleanup();
     setState(State::Scanning);
     m_shouldStop = false;
 
-    m_workerThread = std::make_unique<WorkerThread>(this, false);
-    connect(m_workerThread.get(), &QThread::finished, this, [this]() {
+    m_worker = std::make_unique<WorkerThread>(this, false);
+    connect(m_worker.get(), &QThread::finished, this, [this]() {
         QTimer::singleShot(0, this, [this]() {
-            cleanupThread();
+            cleanup();
         });
     });
-    m_workerThread->start();
+    m_worker->start();
 }
 
 void MemoryScanner::startAutoplay()
 {
-    cleanupThread();
+    cleanup();
     setState(State::Autoplay);
     m_shouldStop = false;
 
-    m_workerThread = std::make_unique<WorkerThread>(this, true);
-    connect(m_workerThread.get(), &QThread::finished, this, [this]() {
+    m_worker = std::make_unique<WorkerThread>(this, true);
+    connect(m_worker.get(), &QThread::finished, this, [this]() {
         QTimer::singleShot(0, this, [this]() {
-            cleanupThread();
+            cleanup();
         });
     });
-    m_workerThread->start();
+    m_worker->start();
 }
 
 void MemoryScanner::stop()
 {
-    if (m_currentState == State::Idle) {
+    if (m_state == State::Idle) {
         return;
     }
 
-    if (m_currentState == State::Autoplay) {
-        HANDLE process = openGameProcess();
+    if (m_state == State::Autoplay) {
+        HANDLE process = openProcess();
         if (process) {
-            if (m_addressesValid && m_foundAddresses[0] != 0) {
+            if (m_addressesValid && m_addresses[0] != 0) {
                 int autoplayValue = 0;
                 SIZE_T bytesWritten;
-                WriteProcessMemory(process, reinterpret_cast<LPVOID>(m_foundAddresses[0]),
-                                   &autoplayValue, sizeof(autoplayValue), &bytesWritten);
+                WriteProcessMemory(process, reinterpret_cast<LPVOID>(m_addresses[0]),
+                    &autoplayValue, sizeof(autoplayValue), &bytesWritten);
             }
             CloseHandle(process);
         }
@@ -304,14 +290,14 @@ void MemoryScanner::stop()
     m_shouldStop = true;
     setState(State::Idle);
 
-    m_updateCheckRequested = false;
+    m_updateRequested = false;
     m_waitingForUpdate = false;
 
     if (!m_gameWasClosed) {
         updateStatus("Made by Amphibi");
     }
 
-    for (auto& thread : m_searchThreads) {
+    for (auto& thread : m_scanThreads) {
         if (thread && thread->isRunning()) {
             thread->quit();
             if (!thread->wait(Constants::THREAD_QUIT_TIMEOUT)) {
@@ -322,36 +308,34 @@ void MemoryScanner::stop()
     }
 }
 
-void MemoryScanner::cleanupThread()
+void MemoryScanner::cleanup()
 {
-    if (m_workerThread) {
-        if (m_workerThread->isRunning()) {
+    if (m_worker) {
+        if (m_worker->isRunning()) {
             m_shouldStop = true;
-            m_workerThread->quit();
-            if (!m_workerThread->wait(Constants::THREAD_QUIT_TIMEOUT)) {
-                m_workerThread->terminate();
-                m_workerThread->wait(Constants::THREAD_TERMINATE_TIMEOUT);
+            m_worker->quit();
+            if (!m_worker->wait(Constants::THREAD_QUIT_TIMEOUT)) {
+                m_worker->terminate();
+                m_worker->wait(Constants::THREAD_TERMINATE_TIMEOUT);
             }
         }
-        m_workerThread.reset();
+        m_worker.reset();
     }
 }
 
-// Process Management
-HANDLE MemoryScanner::openGameProcess() const
+HANDLE MemoryScanner::openProcess() const
 {
-    DWORD pid = ProcessManager::findProcessId(Constants::GAME_PROCESS_NAME);
+    DWORD pid = ProcessManager::getProcessId(Constants::GAME_PROCESS_NAME);
     if (pid == 0) {
         return nullptr;
     }
     return OpenProcess(PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_QUERY_INFORMATION, FALSE, pid);
 }
 
-// Address Scanning
-void MemoryScanner::performAddressScanning()
+void MemoryScanner::scanMemory()
 {
-    m_processHandle = openGameProcess();
-    if (!m_processHandle) {
+    m_process = openProcess();
+    if (!m_process) {
         QTimer::singleShot(0, this, [this]() {
             updateStatus("Game not found");
             updateGameVersion("Not Detected");
@@ -360,14 +344,14 @@ void MemoryScanner::performAddressScanning()
         return;
     }
 
-    m_lastKnownPid = ProcessManager::findProcessId(Constants::GAME_PROCESS_NAME);
+    m_lastPid = ProcessManager::getProcessId(Constants::GAME_PROCESS_NAME);
     m_gameWasClosed = false;
 
     QTimer::singleShot(0, this, [this]() {
         updateStatus("Getting game version");
     });
 
-    QString processVersion = ProcessManager::getProcessMD5(m_lastKnownPid);
+    QString processVersion = ProcessManager::computeProcessMD5(m_lastPid);
     qDebug() << "[LOG] Process MD5:" << processVersion;
 
     if (processVersion.isEmpty()) {
@@ -375,19 +359,19 @@ void MemoryScanner::performAddressScanning()
             updateStatus("Failed to get version");
             setState(State::Idle);
         });
-        CloseHandle(m_processHandle);
-        m_processHandle = nullptr;
+        CloseHandle(m_process);
+        m_process = nullptr;
         return;
     }
 
-    auto config = m_configManager->getVersionConfig(processVersion);
+    auto config = m_config->getVersionConfig(processVersion);
     if (!config.has_value()) {
         QTimer::singleShot(0, this, [this]() {
             updateStatus("Version isn't supported");
             setState(State::Idle);
         });
-        CloseHandle(m_processHandle);
-        m_processHandle = nullptr;
+        CloseHandle(m_process);
+        m_process = nullptr;
         return;
     }
 
@@ -399,15 +383,15 @@ void MemoryScanner::performAddressScanning()
     });
 
     if (m_shouldStop) {
-        CloseHandle(m_processHandle);
-        m_processHandle = nullptr;
+        CloseHandle(m_process);
+        m_process = nullptr;
         return;
     }
 
-    performParallelPatternSearch(m_currentConfig);
+    parallelScan(m_currentConfig);
 }
 
-void MemoryScanner::performParallelPatternSearch(const VersionConfig& config)
+void MemoryScanner::parallelScan(const VersionConfig& config)
 {
     SYSTEM_INFO sysInfo;
     GetSystemInfo(&sysInfo);
@@ -418,64 +402,63 @@ void MemoryScanner::performParallelPatternSearch(const VersionConfig& config)
     uintptr_t totalRange = reinterpret_cast<uintptr_t>(memEnd) - reinterpret_cast<uintptr_t>(memStart);
     uintptr_t regionSize = totalRange / Constants::NUM_SEARCH_THREADS;
 
-    m_searchThreads.clear();
-    m_searchThreads.reserve(Constants::NUM_SEARCH_THREADS);
-    m_completedSearches = 0;
-    m_foundAddresses.fill(0);
+    m_scanThreads.clear();
+    m_scanThreads.reserve(Constants::NUM_SEARCH_THREADS);
+    m_completedScans = 0;
+    m_addresses.fill(0);
 
     for (int i = 0; i < Constants::NUM_SEARCH_THREADS; ++i) {
         uint8_t* start = memStart + (i * regionSize);
         uint8_t* end = (i == Constants::NUM_SEARCH_THREADS - 1) ? memEnd : start + regionSize;
 
-        auto thread = std::make_unique<MemoryRegionSearchThread>(this, m_processHandle, config, start, end, i);
+        auto thread = std::make_unique<MemoryRegionScanThread>(this, m_process, config, start, end, i);
         connect(thread.get(), &QThread::finished, this, [this, thread = thread.get()]() {
-            onMemoryRegionSearchCompleted(thread, m_currentConfig);
+            regionComplete(thread, m_currentConfig);
         });
 
         thread->start();
-        m_searchThreads.push_back(std::move(thread));
+        m_scanThreads.push_back(std::move(thread));
     }
 }
 
-void MemoryScanner::onMemoryRegionSearchCompleted(MemoryRegionSearchThread* completedThread,
-                                                  const VersionConfig& config)
+void MemoryScanner::regionComplete(MemoryRegionScanThread* completedThread, const VersionConfig& config)
 {
-    QMutexLocker locker(&m_resultMutex);
+    QMutexLocker locker(&m_mutex);
 
-    m_completedSearches++;
+    m_completedScans++;
     auto result = completedThread->getResult();
 
-    if (result.found && m_foundAddresses[0] == 0) {
-        m_foundAddresses[0] = result.address;
-        m_foundAddresses[1] = result.address - config.isPlayingOffset;
-        m_foundAddresses[2] = result.address - config.timeOffset;
+    if (result.found && m_addresses[0] == 0) {
+        m_addresses[0] = result.address;
+        m_addresses[1] = result.address - config.isPlayingOffset;
+        m_addresses[2] = result.address - config.timeOffset;
 
         qDebug() << "[LOG] Found addresses:"
-                 << "Autoplay:" << Qt::hex << m_foundAddresses[0]
-                 << "IsPlaying:" << Qt::hex << m_foundAddresses[1]
-                 << "Time:" << Qt::hex << m_foundAddresses[2];
+            << "Autoplay:" << Qt::hex << m_addresses[0]
+            << "IsPlaying:" << Qt::hex << m_addresses[1]
+            << "Time:" << Qt::hex << m_addresses[2];
     }
 
-    if (m_completedSearches >= Constants::NUM_SEARCH_THREADS) {
+    if (m_completedScans >= Constants::NUM_SEARCH_THREADS) {
         QTimer::singleShot(0, this, [this]() {
-            onAllRegionsCompleted();
+            allRegionsComplete();
         });
     }
 }
 
-void MemoryScanner::onAllRegionsCompleted()
+void MemoryScanner::allRegionsComplete()
 {
-    for (auto& thread : m_searchThreads) {
+    for (auto& thread : m_scanThreads) {
         if (thread && thread->isRunning()) {
             thread->quit();
             thread->wait(Constants::THREAD_TERMINATE_TIMEOUT);
         }
     }
-    m_searchThreads.clear();
+    m_scanThreads.clear();
 
-    if (m_processHandle) {
-        CloseHandle(m_processHandle);
-        m_processHandle = nullptr;
+    if (m_process) {
+        CloseHandle(m_process);
+        m_process = nullptr;
     }
 
     if (m_shouldStop) {
@@ -484,8 +467,8 @@ void MemoryScanner::onAllRegionsCompleted()
         return;
     }
 
-    DWORD currentPid = ProcessManager::findProcessId(Constants::GAME_PROCESS_NAME);
-    if (currentPid == 0 || currentPid != m_lastKnownPid) {
+    DWORD currentPid = ProcessManager::getProcessId(Constants::GAME_PROCESS_NAME);
+    if (currentPid == 0 || currentPid != m_lastPid) {
         m_addressesValid = false;
         m_gameWasClosed = true;
         setState(State::Idle);
@@ -493,18 +476,18 @@ void MemoryScanner::onAllRegionsCompleted()
         return;
     }
 
-    if (m_foundAddresses[0] != 0) {
+    if (m_addresses[0] != 0) {
         qDebug() << "[LOG] Pattern scanning completed successfully";
         m_addressesValid = true;
 
         setState(State::Autoplay);
-        m_workerThread = std::make_unique<WorkerThread>(this, true);
-        connect(m_workerThread.get(), &QThread::finished, this, [this]() {
+        m_worker = std::make_unique<WorkerThread>(this, true);
+        connect(m_worker.get(), &QThread::finished, this, [this]() {
             QTimer::singleShot(0, this, [this]() {
-                cleanupThread();
+                cleanup();
             });
         });
-        m_workerThread->start();
+        m_worker->start();
     } else {
         qDebug() << "[LOG] Pattern not found in any memory region";
         m_addressesValid = false;
@@ -513,10 +496,9 @@ void MemoryScanner::onAllRegionsCompleted()
     }
 }
 
-// Autoplay Loop
-void MemoryScanner::performAutoplayLoop()
+void MemoryScanner::runAutoplay()
 {
-    HANDLE process = openGameProcess();
+    HANDLE process = openProcess();
     if (!process) {
         QTimer::singleShot(0, this, [this]() {
             setState(State::Idle);
@@ -530,13 +512,13 @@ void MemoryScanner::performAutoplayLoop()
         updateStatus("Autoplay is active");
     });
 
-    const uintptr_t autoplayAddr = m_foundAddresses[0];
-    const uintptr_t isPlayingAddr = m_foundAddresses[1];
-    const uintptr_t timeAddr = m_foundAddresses[2];
+    const uintptr_t autoplayAddr = m_addresses[0];
+    const uintptr_t isPlayingAddr = m_addresses[1];
+    const uintptr_t timeAddr = m_addresses[2];
 
     uint8_t prev_isPlaying = 0;
 
-    while (!m_shouldStop && m_currentState == State::Autoplay) {
+    while (!m_shouldStop && m_state == State::Autoplay) {
         if (!ProcessManager::isProcessRunning(process)) {
             QTimer::singleShot(0, this, [this]() {
                 m_gameWasClosed = true;
@@ -548,8 +530,8 @@ void MemoryScanner::performAutoplayLoop()
             break;
         }
 
-        DWORD currentPid = ProcessManager::findProcessId(Constants::GAME_PROCESS_NAME);
-        if (currentPid != m_lastKnownPid) {
+        DWORD currentPid = ProcessManager::getProcessId(Constants::GAME_PROCESS_NAME);
+        if (currentPid != m_lastPid) {
             QTimer::singleShot(0, this, [this]() {
                 m_gameWasClosed = true;
                 setState(State::Idle);
@@ -564,9 +546,9 @@ void MemoryScanner::performAutoplayLoop()
 
         SIZE_T bytesRead;
         if (ReadProcessMemory(process, reinterpret_cast<LPCVOID>(isPlayingAddr), &isPlaying,
-                              sizeof(isPlaying), &bytesRead) && bytesRead == sizeof(isPlaying) &&
+            sizeof(isPlaying), &bytesRead) && bytesRead == sizeof(isPlaying) &&
             ReadProcessMemory(process, reinterpret_cast<LPCVOID>(timeAddr), &time,
-                              sizeof(time), &bytesRead) && bytesRead == sizeof(time)) {
+            sizeof(time), &bytesRead) && bytesRead == sizeof(time)) {
 
             int autoplayValue = 0;
             if (m_gameVersion == "1.311") {
@@ -580,27 +562,25 @@ void MemoryScanner::performAutoplayLoop()
 
             SIZE_T bytesWritten;
             WriteProcessMemory(process, reinterpret_cast<LPVOID>(autoplayAddr),
-                               &autoplayValue, sizeof(autoplayValue), &bytesWritten);
+                &autoplayValue, sizeof(autoplayValue), &bytesWritten);
         }
 
-        for (int i = 0; i < Constants::AUTOPLAY_CHECK_INTERVAL && !m_shouldStop &&
-                        m_currentState == State::Autoplay; ++i) {
+        for (int i = 0; i < Constants::AUTOPLAY_CHECK_INTERVAL && !m_shouldStop && m_state == State::Autoplay; ++i) {
             QThread::msleep(1);
         }
 
         prev_isPlaying = isPlaying;
     }
 
-    if (m_addressesValid && m_foundAddresses[0] != 0) {
+    if (m_addressesValid && m_addresses[0] != 0) {
         int autoplayValue = 0;
         SIZE_T bytesWritten;
-        WriteProcessMemory(process, reinterpret_cast<LPVOID>(m_foundAddresses[0]),
-                           &autoplayValue, sizeof(autoplayValue), &bytesWritten);
-    }
+        WriteProcessMemory(process, reinterpret_cast<LPVOID>(m_addresses[0]),
+            &autoplayValue, sizeof(autoplayValue), &bytesWritten);
 
     CloseHandle(process);
 
-    if (m_currentState != State::Idle) {
+    if (m_state != State::Idle) {
         QTimer::singleShot(0, this, [this]() {
             setState(State::Idle);
             if (!m_gameWasClosed) {

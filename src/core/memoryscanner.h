@@ -1,29 +1,37 @@
 #ifndef MEMORYSCANNER_H
 #define MEMORYSCANNER_H
 
+// Qt includes
 #include <QObject>
 #include <QString>
 #include <QThread>
 #include <QMutex>
 #include <QTimer>
-#include <QDebug>
 #include <QFile>
 #include <QDir>
 #include <QCoreApplication>
-#include <windows.h>
+#include <QDebug>
+
+// STL includes
 #include <vector>
 #include <array>
 #include <memory>
+#include <algorithm>
 
+// System includes
+#include <windows.h>
+
+// Project includes
+#include "patternmatcher.h"
 #include "../utils/configmanager.h"
+#include "../utils/constants.h"
+#include "../platform/windows/processmanager.h"
 
 class UpdateManager;
 
 class MemoryScanner : public QObject
 {
     Q_OBJECT
-
-    // QML Properties
     Q_PROPERTY(bool scanning READ isScanning NOTIFY scanningChanged)
     Q_PROPERTY(bool inAutoplay READ inAutoplay NOTIFY inAutoplayChanged)
     Q_PROPERTY(QString statusText READ statusText NOTIFY statusTextChanged)
@@ -34,23 +42,16 @@ public:
     explicit MemoryScanner(QObject *parent = nullptr);
     ~MemoryScanner();
 
-    // QML Methods
     Q_INVOKABLE void toggle();
-    Q_INVOKABLE void reloadConfiguration();
-    Q_INVOKABLE void onUpdateCompleted();
+    Q_INVOKABLE void reloadConfig();
+    Q_INVOKABLE void onUpdateDone();
 
-    // Property Getters
     bool isScanning() const;
     bool inAutoplay() const;
     QString statusText() const;
     QString gameVersion() const;
     QString connectionStatus() const;
-
-    // Thread Worker Methods
-    void performAddressScanning();
-    void performAutoplayLoop();
     void updateConnectionStatus(const QString& status);
-    bool shouldStopScanning() const;
 
 signals:
     void scanningChanged(bool scanning);
@@ -61,12 +62,7 @@ signals:
     void updateCheckStarted();
 
 private:
-    // Enums
-    enum class State {
-        Idle,
-        Scanning,
-        Autoplay
-    };
+    enum class State { Idle, Scanning, Autoplay };
 
     struct PatternSearchResult {
         int threadId;
@@ -74,19 +70,14 @@ private:
         bool found;
     };
 
-    // Nested Classes
-    class MemoryRegionSearchThread : public QThread {
+    class MemoryRegionScanThread : public QThread {
     public:
-        MemoryRegionSearchThread(MemoryScanner* scanner, HANDLE process,
+        MemoryRegionScanThread(MemoryScanner* scanner, HANDLE process,
                                  const VersionConfig& config, uint8_t* startAddr,
                                  uint8_t* endAddr, int threadId);
-
         PatternSearchResult getResult() const { return m_result; }
-        int getThreadId() const { return m_threadId; }
-
     protected:
         void run() override;
-
     private:
         MemoryScanner* m_scanner;
         HANDLE m_process;
@@ -101,60 +92,49 @@ private:
     public:
         WorkerThread(MemoryScanner* scanner, bool isAutoplay = false)
             : m_scanner(scanner), m_isAutoplay(isAutoplay) {}
-
     protected:
         void run() override;
-
     private:
         MemoryScanner* m_scanner;
         bool m_isAutoplay;
     };
 
-    // Core Methods
     void setState(State newState);
     void updateStatus(const QString& status);
     void updateGameVersion(const QString& version);
-    void startScanning();
+    void loadConfig();
+    void startScan();
     void startAutoplay();
     void stop();
-    void cleanupThread();
-    void loadConfiguration();
+    void cleanup();
+    void parallelScan(const VersionConfig& config);
+    void regionComplete(MemoryRegionScanThread* thread, const VersionConfig& config);
+    void allRegionsComplete();
+    bool shouldStop() const;
+    void scanMemory();
+    void runAutoplay();
+    HANDLE openProcess() const;
 
-    // Process Methods
-    HANDLE openGameProcess() const;
-
-    // Scanning Methods
-    void performParallelPatternSearch(const VersionConfig& config);
-    void onMemoryRegionSearchCompleted(MemoryRegionSearchThread* completedThread,
-                                       const VersionConfig& config);
-    void onAllRegionsCompleted();
-
-    // State Variables
-    State m_currentState;
-    QString m_currentStatus;
+    State m_state;
+    QString m_status;
     QString m_gameVersion;
     QString m_connectionStatus;
     bool m_shouldStop;
     bool m_gameWasClosed;
-
-    // Update State Variables
     bool m_waitingForUpdate;
-    bool m_updateCheckRequested;
-
-    // Process Tracking Variables
-    DWORD m_lastKnownPid;
-    std::array<uintptr_t, 3> m_foundAddresses;
+    bool m_updateRequested;
     bool m_addressesValid;
+    
+    DWORD m_lastPid;
+    std::array<uintptr_t, 3> m_addresses;
+    
+    std::unique_ptr<WorkerThread> m_worker;
+    std::vector<std::unique_ptr<MemoryRegionScanThread>> m_scanThreads;
+    QMutex m_mutex;
+    int m_completedScans;
+    HANDLE m_process;
 
-    // Thread Management Variables
-    std::unique_ptr<WorkerThread> m_workerThread;
-    std::vector<std::unique_ptr<MemoryRegionSearchThread>> m_searchThreads;
-    QMutex m_resultMutex;
-    int m_completedSearches;
-    HANDLE m_processHandle;
-
-    // External Dependencies
-    std::unique_ptr<ConfigManager> m_configManager;
+    std::unique_ptr<ConfigManager> m_config;
     VersionConfig m_currentConfig;
 };
 

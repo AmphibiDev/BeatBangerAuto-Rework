@@ -24,7 +24,7 @@ void PatternMatcher::buildBadCharTable()
     }
 }
 
-size_t PatternMatcher::find(const uint8_t* data, size_t dataSize) const
+size_t PatternMatcher::search(const uint8_t* data, size_t dataSize) const
 {
     if (m_patternSize == 0 || dataSize < m_patternSize) {
         return SIZE_MAX;
