@@ -12,7 +12,7 @@ namespace Constants {
     constexpr const char* GAME_PROCESS_NAME = "beatbanger.exe";
 
     constexpr const char* CONFIG_FILENAME = "config.json";
-    constexpr const char* GITHUB_CONFIG_URL = "https://raw.githubusercontent.com/AmphibiDev/BeatBangerAuto-Rework/dev/config.json";
+    constexpr const char* GITHUB_CONFIG_URL = "https://raw.githubusercontent.com/AmphibiDev/BeatBangerAuto-Rework/main/config.json";
     constexpr const char* GITHUB_RELEASES_URL = "https://github.com/AmphibiDev/BeatBangerAuto-Rework/releases/latest";
     constexpr int MAX_REASONABLE_OFFSET = 1024 * 1024;
 
