@@ -5,7 +5,6 @@
 #include <QObject>
 #include <QString>
 #include <QByteArray>
-#include <QTimer>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
@@ -38,27 +37,27 @@ signals:
     void updateStatus(const QString& status);
     void configUpdated();
     void configUpToDate();
-    void updateAvailable(const QString& newVersion);
+    void updateAvailable();
+    void useLocalConfig();
 
 private slots:
     void onConfigDownloadFinished();
-    void onNetworkTimeout();
 
 private:
     QNetworkAccessManager* m_networkManager;
     QNetworkReply* m_currentReply;
-    QTimer* m_timeoutTimer;
 
     QString m_githubConfigUrl;
     QString m_localConfigPath;
     QString m_currentVersion;
+    bool m_updateDialogShown;
 
     QString readLocalVersion();
     bool saveConfig(const QByteArray& data);
     bool isLocalConfigValid();
     void finalizeWithoutUpdate();
     void abortNetworkRequest();
-    void showUpdateDialog(const QString& newVersion);
+    void showUpdateDialog();
 };
 
 #endif // UPDATEMANAGER_H
