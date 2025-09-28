@@ -82,17 +82,14 @@ MemoryScanner::MemoryScanner(QObject *parent)
     , m_connectionStatus("")
     , m_shouldStop(false)
     , m_gameWasClosed(false)
-    , m_waitingForUpdate(false)
-    , m_updateRequested(false)
     , m_lastPid(0)
     , m_addressesValid(false)
     , m_completedScans(0)
-    , m_process(nullptr)
     , m_config(std::make_unique<ConfigManager>())
+    , m_configLoaded(false)
 {
     qRegisterMetaType<quintptr>("quintptr");
     m_addresses.fill(0);
-    loadConfig();
 }
 
 MemoryScanner::~MemoryScanner()
@@ -131,68 +128,73 @@ bool MemoryScanner::shouldStop() const
     return m_shouldStop;
 }
 
-void MemoryScanner::reloadConfig()
-{
-    loadConfig();
-}
-
-void MemoryScanner::loadConfig()
+bool MemoryScanner::loadConfig()
 {
     QString configPath = QDir(QCoreApplication::applicationDirPath()).filePath(Constants::CONFIG_FILENAME);
 
     if (!QFile::exists(configPath)) {
         qDebug() << "[LOG] Config file does not exist:" << configPath;
-        updateConnectionStatus("Config file not found");
-        return;
+        m_configLoaded = false;
+        return false;
     }
 
     if (m_config->loadFromFile(configPath)) {
         qDebug() << "[LOG] Successfully loaded configurations";
+        m_configLoaded = true;
+        return true;
     } else {
         qDebug() << "[ERROR] Failed to load configuration:" << m_config->getLastError();
-        updateConnectionStatus("Config load failed");
+        m_configLoaded = false;
+        return false;
     }
+}
+
+bool MemoryScanner::isConfigFileExists() const
+{
+    QString configPath = QDir(QCoreApplication::applicationDirPath()).filePath(Constants::CONFIG_FILENAME);
+    return QFile::exists(configPath);
 }
 
 void MemoryScanner::toggle()
 {
     switch (m_state) {
-    case State::Idle:
-        if (!m_updateRequested) {
-            m_updateRequested = true;
-            m_waitingForUpdate = true;
-            emit updateCheckStarted();
-            return;
-        }
+        case State::Idle:
+            m_gameWasClosed = false;
 
-        loadConfig();
-        m_gameWasClosed = false;
-
-        if (m_addressesValid) {
-            DWORD currentPid = ProcessManager::getProcessId(Constants::GAME_PROCESS_NAME);
-            if (currentPid != 0 && currentPid == m_lastPid) {
-                startAutoplay();
-                return;
-            } else {
-                m_addressesValid = false;
-                m_addresses.fill(0);
+            if (m_addressesValid) {
+                DWORD currentPid = ProcessManager::getProcessId(Constants::GAME_PROCESS_NAME);
+                if (currentPid != 0 && currentPid == m_lastPid) {
+                    startAutoplay();
+                    return;
+                } else {
+                    m_addressesValid = false;
+                    m_addresses.fill(0);
+                }
             }
-        }
-        startScan();
-        break;
 
-    case State::Scanning:
-    case State::Autoplay:
-        stop();
-        break;
+            m_configLoaded = false;
+            emit updateCheckStarted();
+            break;
+
+        case State::Scanning:
+        case State::Autoplay:
+            stop();
+            break;
     }
 }
 
 void MemoryScanner::onUpdateDone()
 {
-    if (m_waitingForUpdate && m_state == State::Idle) {
-        m_waitingForUpdate = false;
-        toggle();
+    if (m_state == State::Idle) {
+        if (loadConfig()) {
+            startScan();
+        } else {
+            if (!isConfigFileExists()) {
+                updateStatus("Config file not found");
+            } else {
+                updateStatus("Config load failed");
+            }
+        }
     }
 }
 
@@ -275,7 +277,9 @@ void MemoryScanner::stop()
     }
 
     if (m_state == State::Autoplay) {
-        HANDLE process = openProcess();
+        auto processHandle = ProcessManager::openProcess(Constants::GAME_PROCESS_NAME,
+            PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_QUERY_INFORMATION);
+        HANDLE process = processHandle.get();
         if (process) {
             if (m_addressesValid && m_addresses[0] != 0) {
                 int autoplayValue = 0;
@@ -283,15 +287,11 @@ void MemoryScanner::stop()
                 WriteProcessMemory(process, reinterpret_cast<LPVOID>(m_addresses[0]),
                     &autoplayValue, sizeof(autoplayValue), &bytesWritten);
             }
-            CloseHandle(process);
         }
     }
 
     m_shouldStop = true;
     setState(State::Idle);
-
-    m_updateRequested = false;
-    m_waitingForUpdate = false;
 
     if (!m_gameWasClosed) {
         updateStatus("Made by Amphibi");
@@ -323,19 +323,12 @@ void MemoryScanner::cleanup()
     }
 }
 
-HANDLE MemoryScanner::openProcess() const
-{
-    DWORD pid = ProcessManager::getProcessId(Constants::GAME_PROCESS_NAME);
-    if (pid == 0) {
-        return nullptr;
-    }
-    return OpenProcess(PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_QUERY_INFORMATION, FALSE, pid);
-}
-
 void MemoryScanner::scanMemory()
 {
-    m_process = openProcess();
-    if (!m_process) {
+    m_processHandle = ProcessManager::openProcess(Constants::GAME_PROCESS_NAME,
+        PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_QUERY_INFORMATION);
+
+    if (!m_processHandle.get()) {
         QTimer::singleShot(0, this, [this]() {
             updateStatus("Game not found");
             updateGameVersion("Not Detected");
@@ -359,8 +352,6 @@ void MemoryScanner::scanMemory()
             updateStatus("Failed to get version");
             setState(State::Idle);
         });
-        CloseHandle(m_process);
-        m_process = nullptr;
         return;
     }
 
@@ -370,8 +361,6 @@ void MemoryScanner::scanMemory()
             updateStatus("Version isn't supported");
             setState(State::Idle);
         });
-        CloseHandle(m_process);
-        m_process = nullptr;
         return;
     }
 
@@ -383,8 +372,6 @@ void MemoryScanner::scanMemory()
     });
 
     if (m_shouldStop) {
-        CloseHandle(m_process);
-        m_process = nullptr;
         return;
     }
 
@@ -411,7 +398,7 @@ void MemoryScanner::parallelScan(const VersionConfig& config)
         uint8_t* start = memStart + (i * regionSize);
         uint8_t* end = (i == Constants::NUM_SEARCH_THREADS - 1) ? memEnd : start + regionSize;
 
-        auto thread = std::make_unique<MemoryRegionScanThread>(this, m_process, config, start, end, i);
+        auto thread = std::make_unique<MemoryRegionScanThread>(this, m_processHandle.get(), config, start, end, i);
         connect(thread.get(), &QThread::finished, this, [this, thread = thread.get()]() {
             regionComplete(thread, m_currentConfig);
         });
@@ -433,10 +420,10 @@ void MemoryScanner::regionComplete(MemoryRegionScanThread* completedThread, cons
         m_addresses[1] = result.address - config.isPlayingOffset;
         m_addresses[2] = result.address - config.timeOffset;
 
-        qDebug() << "[LOG] Found addresses:"
-            << "Autoplay:" << Qt::hex << m_addresses[0]
-            << "IsPlaying:" << Qt::hex << m_addresses[1]
-            << "Time:" << Qt::hex << m_addresses[2];
+        qDebug() << "[LOG] Found addresses"
+            << "| Autoplay:" << Qt::hex << m_addresses[0]
+            << "| IsPlaying:" << Qt::hex << m_addresses[1]
+            << "| Time:" << Qt::hex << m_addresses[2];
     }
 
     if (m_completedScans >= Constants::NUM_SEARCH_THREADS) {
@@ -455,11 +442,6 @@ void MemoryScanner::allRegionsComplete()
         }
     }
     m_scanThreads.clear();
-
-    if (m_process) {
-        CloseHandle(m_process);
-        m_process = nullptr;
-    }
 
     if (m_shouldStop) {
         setState(State::Idle);
@@ -498,7 +480,9 @@ void MemoryScanner::allRegionsComplete()
 
 void MemoryScanner::runAutoplay()
 {
-    HANDLE process = openProcess();
+    auto processHandle = ProcessManager::openProcess(Constants::GAME_PROCESS_NAME,
+        PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_QUERY_INFORMATION);
+    HANDLE process = processHandle.get();
     if (!process) {
         QTimer::singleShot(0, this, [this]() {
             setState(State::Idle);
@@ -578,8 +562,6 @@ void MemoryScanner::runAutoplay()
         WriteProcessMemory(process, reinterpret_cast<LPVOID>(m_addresses[0]),
             &autoplayValue, sizeof(autoplayValue), &bytesWritten);
     }
-
-    CloseHandle(process);
 
     if (m_state != State::Idle) {
         QTimer::singleShot(0, this, [this]() {

@@ -25,6 +25,7 @@ private slots:
     void onUpdateStatusChanged(const QString& status);
     void onConfigUpdateCompleted();
     void onConfigUpToDate();
+    void onUseLocalConfig();
 
 private:
     void setupConnections();

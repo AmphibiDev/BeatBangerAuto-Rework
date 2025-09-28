@@ -15,6 +15,7 @@ void AppController::setupConnections()
     connect(m_updateManager, &UpdateManager::updateStatus, this, &AppController::onUpdateStatusChanged);
     connect(m_updateManager, &UpdateManager::configUpdated, this, &AppController::onConfigUpdateCompleted);
     connect(m_updateManager, &UpdateManager::configUpToDate, this, &AppController::onConfigUpToDate);
+    connect(m_updateManager, &UpdateManager::useLocalConfig, this, &AppController::onUseLocalConfig);
 }
 
 void AppController::onUpdateCheckRequested()
@@ -37,6 +38,11 @@ void AppController::onConfigUpdateCompleted()
 }
 
 void AppController::onConfigUpToDate()
+{
+    handleUpdateFinished();
+}
+
+void AppController::onUseLocalConfig()
 {
     handleUpdateFinished();
 }

@@ -4,14 +4,11 @@ UpdateManager::UpdateManager(QObject *parent)
     : QObject(parent)
     , m_networkManager(new QNetworkAccessManager(this))
     , m_currentReply(nullptr)
-    , m_timeoutTimer(new QTimer(this))
     , m_githubConfigUrl(Constants::GITHUB_CONFIG_URL)
+    , m_updateDialogShown(false)
 {
     m_localConfigPath = QDir(QCoreApplication::applicationDirPath()).filePath(Constants::CONFIG_FILENAME);
     m_currentVersion = readLocalVersion();
-
-    m_timeoutTimer->setSingleShot(true);
-    connect(m_timeoutTimer, &QTimer::timeout, this, &UpdateManager::onNetworkTimeout);
 }
 
 void UpdateManager::checkForUpdates()
@@ -25,8 +22,6 @@ void UpdateManager::checkForUpdates()
 
     m_currentReply = m_networkManager->get(request);
     connect(m_currentReply, &QNetworkReply::finished, this, &UpdateManager::onConfigDownloadFinished);
-
-    m_timeoutTimer->start(Constants::NETWORK_REQUEST_TIMEOUT);
 }
 
 bool UpdateManager::localConfigExists() const
@@ -41,8 +36,6 @@ QString UpdateManager::localConfigPath() const
 
 void UpdateManager::onConfigDownloadFinished()
 {
-    m_timeoutTimer->stop();
-
     if (!m_currentReply) return;
 
     QNetworkReply* reply = m_currentReply;
@@ -51,43 +44,58 @@ void UpdateManager::onConfigDownloadFinished()
 
     if (reply->error() != QNetworkReply::NoError) {
         qDebug() << "[LOG] Network error:" << reply->errorString();
+        emit updateStatus("No internet connection");
 
-        if (reply->error() == QNetworkReply::HostNotFoundError ||
-            reply->error() == QNetworkReply::TimeoutError ||
-            reply->error() == QNetworkReply::NetworkSessionFailedError) {
-            qDebug() << "[LOG] No internet connection";
+        if (localConfigExists() && isLocalConfigValid()) {
+            qDebug() << "[LOG] Using local config due to no internet";
+            emit useLocalConfig();
         } else {
-            qDebug() << "[LOG] Failed to download config";
+            qDebug() << "[LOG] No valid local config available";
+            emit configUpToDate();
         }
-
-        finalizeWithoutUpdate();
         return;
     }
 
     QByteArray configData = reply->readAll();
     if (configData.isEmpty()) {
         qDebug() << "[LOG] Downloaded config is empty";
-        finalizeWithoutUpdate();
+        emit updateStatus("Downloaded config is empty");
+        emit configUpToDate();
         return;
     }
 
     QJsonDocument remoteDoc = QJsonDocument::fromJson(configData);
     if (!remoteDoc.isObject()) {
         qDebug() << "[LOG] Invalid JSON format";
-        finalizeWithoutUpdate();
+        emit updateStatus("Invalid config format");
+        emit configUpToDate();
         return;
     }
 
     QString remoteAppVersion = remoteDoc.object().value("app_version").toString("");
     if (remoteAppVersion.isEmpty()) {
         qDebug() << "[LOG] Missing app_version in config";
-        finalizeWithoutUpdate();
+        emit updateStatus("Invalid config structure");
+        emit configUpToDate();
         return;
     }
 
     if (remoteAppVersion != Constants::APP_VERSION) {
-        qDebug() << "[LOG] App version mismatch. Local:" << Constants::APP_VERSION << "Remote:" << remoteAppVersion;
-        showUpdateDialog(remoteAppVersion);
+        qDebug() << "[LOG] App version mismatch. Local:" << QString(Constants::APP_VERSION) << "| Remote:" << remoteAppVersion;
+
+        if (!m_updateDialogShown) {
+            m_updateDialogShown = true;
+            showUpdateDialog();
+        }
+
+        if (localConfigExists() && isLocalConfigValid()) {
+            qDebug() << "[LOG] Using existing local config despite version mismatch";
+            emit configUpToDate();
+        } else {
+            qDebug() << "[LOG] No valid local config available";
+            emit updateStatus("No config available");
+            emit configUpToDate();
+        }
         return;
     }
 
@@ -100,24 +108,17 @@ void UpdateManager::onConfigDownloadFinished()
 
     if (shouldUpdate) {
         if (saveConfig(configData)) {
+            emit updateStatus("Config is up to date.");
             emit configUpdated();
         } else {
             qDebug() << "[LOG] Failed to save config";
+            emit updateStatus("Failed to save config");
             emit configUpdated();
         }
     } else {
         emit updateStatus("Config is up to date.");
         emit configUpToDate();
     }
-}
-
-void UpdateManager::onNetworkTimeout()
-{
-    qDebug() << "[LOG] Network request timed out";
-
-    abortNetworkRequest();
-
-    finalizeWithoutUpdate();
 }
 
 QString UpdateManager::readLocalVersion()
@@ -211,15 +212,12 @@ bool UpdateManager::isLocalConfigValid()
         return false;
     }
 
-    qDebug() << "[LOG] Local config is valid";
     return true;
 }
 
 void UpdateManager::finalizeWithoutUpdate()
 {
-    if (isLocalConfigValid()) {
-        emit configUpToDate();
-    }
+    emit configUpToDate();
 }
 
 void UpdateManager::abortNetworkRequest()
@@ -230,27 +228,25 @@ void UpdateManager::abortNetworkRequest()
         m_currentReply->deleteLater();
         m_currentReply = nullptr;
     }
-
-    m_timeoutTimer->stop();
 }
 
-void UpdateManager::showUpdateDialog(const QString& newVersion)
+void UpdateManager::showUpdateDialog()
 {
     QMessageBox msgBox(
         QMessageBox::Warning,
-        "Update Required!",
-        QString("A new app version is available!"),
+        "New app version is available!",
+        "This program requires an update to function properly<br>"
+        "Would you like to visit GitHub releases tab to download update?",
         QMessageBox::Yes | QMessageBox::No
     );
 
     msgBox.setWindowFlags(msgBox.windowFlags() & ~Qt::WindowContextHelpButtonHint);
     msgBox.setTextFormat(Qt::RichText);
-    msgBox.setInformativeText(QString("Would you like to visit GitHub to download update?"));
     msgBox.setDefaultButton(QMessageBox::Yes);
 
     if (msgBox.exec() == QMessageBox::Yes) {
         QDesktopServices::openUrl(QUrl(Constants::GITHUB_RELEASES_URL));
     }
 
-    emit updateAvailable(newVersion);
+    emit updateAvailable();
 }

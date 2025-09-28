@@ -43,7 +43,6 @@ public:
     ~MemoryScanner();
 
     Q_INVOKABLE void toggle();
-    Q_INVOKABLE void reloadConfig();
     Q_INVOKABLE void onUpdateDone();
 
     bool isScanning() const;
@@ -102,7 +101,6 @@ private:
     void setState(State newState);
     void updateStatus(const QString& status);
     void updateGameVersion(const QString& version);
-    void loadConfig();
     void startScan();
     void startAutoplay();
     void stop();
@@ -113,7 +111,8 @@ private:
     bool shouldStop() const;
     void scanMemory();
     void runAutoplay();
-    HANDLE openProcess() const;
+    bool loadConfig();
+    bool isConfigFileExists() const;
 
     State m_state;
     QString m_status;
@@ -121,9 +120,8 @@ private:
     QString m_connectionStatus;
     bool m_shouldStop;
     bool m_gameWasClosed;
-    bool m_waitingForUpdate;
-    bool m_updateRequested;
     bool m_addressesValid;
+    bool m_configLoaded;
     
     DWORD m_lastPid;
     std::array<uintptr_t, 3> m_addresses;
@@ -132,7 +130,7 @@ private:
     std::vector<std::unique_ptr<MemoryRegionScanThread>> m_scanThreads;
     QMutex m_mutex;
     int m_completedScans;
-    HANDLE m_process;
+    ProcessHandle m_processHandle;
 
     std::unique_ptr<ConfigManager> m_config;
     VersionConfig m_currentConfig;
