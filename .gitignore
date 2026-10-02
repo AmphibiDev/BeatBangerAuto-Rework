@@ -11,11 +11,12 @@ Makefile
 install_manifest.txt
 
 # Qt Creator
-*.pro.user
-*.qbs.user
-*.qmlproject.user
+.qtcreator/
+*.pro.user*
+*.qbs.user*
+*.qmlproject.user*
 *.autosave
-CMakeLists.txt.user
+CMakeLists.txt.user*
 
 # OS junk
 .DS_Store
